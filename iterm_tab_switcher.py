@@ -5,12 +5,34 @@ iTerm2 Tab Switcher - Menu bar app for quick tab navigation
 
 import rumps
 import subprocess
+from Foundation import NSObject
+from AppKit import NSMenu
+import objc
+
+
+class MenuDelegate(NSObject):
+    """Delegate to refresh tabs when menu opens"""
+
+    def initWithApp_(self, app):
+        self = objc.super(MenuDelegate, self).init()
+        if self is None:
+            return None
+        self.app = app
+        return self
+
+    def menuWillOpen_(self, menu):
+        """Called when menu is about to open"""
+        self.app.refresh_tabs(None)
 
 
 class ITermTabSwitcher(rumps.App):
     def __init__(self):
         super().__init__("🖥️", quit_button=None)
         self.refresh_tabs(None)
+        # Set up delegate to refresh on menu open
+        self._menu_delegate = MenuDelegate.alloc().initWithApp_(self)
+        self._nsapp_menu = self._menu._menu
+        self._nsapp_menu.setDelegate_(self._menu_delegate)
 
     def get_tabs(self):
         """Get all iTerm2 tabs via AppleScript"""
@@ -67,7 +89,6 @@ class ITermTabSwitcher(rumps.App):
         except Exception as e:
             print(f"Error switching tab: {e}")
 
-    @rumps.clicked("Refresh")
     def refresh_tabs(self, _):
         """Refresh the tab list"""
         self.menu.clear()
@@ -99,7 +120,6 @@ class ITermTabSwitcher(rumps.App):
                 self.menu.add(item)
 
         self.menu.add(None)  # separator
-        self.menu.add(rumps.MenuItem("Refresh", callback=self.refresh_tabs))
         self.menu.add(rumps.MenuItem("Quit", callback=rumps.quit_application))
 
     def on_tab_click(self, sender):
