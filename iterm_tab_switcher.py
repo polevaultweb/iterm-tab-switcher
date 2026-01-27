@@ -45,8 +45,16 @@ class ITermTabSwitcher(rumps.App):
                 set tabIndex to 0
                 repeat with t in tabs of w
                     set tabIndex to tabIndex + 1
-                    set sessionName to name of current session of t
-                    set output to output & winIndex & "," & tabIndex & "," & sessionName & linefeed
+                    tell current session of t
+                        set tabTitle to variable named "tab.title"
+                        set sessionName to name
+                    end tell
+                    if tabTitle is not equal to sessionName and tabTitle is not equal to "" then
+                        set displayName to tabTitle & " - " & sessionName
+                    else
+                        set displayName to sessionName
+                    end if
+                    set output to output & winIndex & "," & tabIndex & "," & displayName & linefeed
                 end repeat
             end repeat
             return output
