@@ -7,7 +7,7 @@ A macOS menu bar app for quick navigation between iTerm2 tabs.
 - Shows all open iTerm2 tabs in a menu bar dropdown
 - Tabs grouped by window
 - Click to switch to any tab instantly
-- Refresh button to update the tab list
+- Auto-refreshes when menu opens
 
 ## Requirements
 
