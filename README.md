@@ -32,10 +32,9 @@ python3 iterm_tab_switcher.py
 ## Usage
 
 1. Look for the **🖥️** icon in your macOS menu bar
-2. Click to see all open iTerm2 tabs
+2. Click to see all open iTerm2 tabs (list refreshes automatically)
 3. Click any tab name to switch to it
-4. Use "Refresh" to update the list after opening/closing tabs
-5. Use "Quit" to close the app
+4. Use "Quit" to close the app
 
 ## Run on Startup
 
