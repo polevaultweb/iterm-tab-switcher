@@ -7,7 +7,7 @@ A macOS menu bar app for quick navigation between iTerm2 tabs.
 - Shows all open iTerm2 tabs in a menu bar dropdown
 - Tabs grouped by window
 - Click to switch to any tab instantly
-- Auto-refreshes when menu opens
+- Opens instantly: a background thread refreshes the tab list every 5 seconds (`REFRESH_SECS`), and each open triggers another refresh
 - Claude Code threads listed first, grouped by what they need from you; the menu bar shows `❓N` when N threads need an answer
 
 ## Claude Code thread states
@@ -48,7 +48,7 @@ python3 iterm_tab_switcher.py
 ## Usage
 
 1. Look for the **🖥️** icon in your macOS menu bar
-2. Click to see all open iTerm2 tabs (list refreshes automatically)
+2. Click to see all open iTerm2 tabs
 3. Click any tab name to switch to it
 4. Use "Quit" to close the app
 
