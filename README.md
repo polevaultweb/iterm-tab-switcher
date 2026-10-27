@@ -8,6 +8,22 @@ A macOS menu bar app for quick navigation between iTerm2 tabs.
 - Tabs grouped by window
 - Click to switch to any tab instantly
 - Auto-refreshes when menu opens
+- Claude Code threads listed first, grouped by what they need from you; the menu bar shows `❓N` when N threads need an answer
+
+## Claude Code thread states
+
+`claude_threads.py` combines Claude Code's live status file (`~/.claude/sessions/<pid>.json`, busy or idle) with the tail of each thread's transcript, and matches threads to tabs by tty. No hooks needed.
+
+| State | Rule |
+|-------|------|
+| ❓ Needs answer | Idle, and the last reply ends with a question, or a tool call (AskUserQuestion, a permission prompt) has no result yet |
+| ⏳ Working | Busy |
+| 💬 Current | Idle under 30 minutes, nothing asked |
+| 🎁 Ready to wrap | Idle 30 minutes to 8 hours, nothing asked |
+| ✅ Wrapped, close tab | The last turn ran `git push`, which wrap-up does |
+| 💤 Stale | Idle over 8 hours (a `❓` marks an old unanswered question) |
+
+Hover over a thread to see the end of Claude's last reply. Thresholds are `CURRENT_MINS` and `STALE_HOURS` in `claude_threads.py`. `python3 claude_threads.py` prints the same table in the terminal.
 
 ## Requirements
 
