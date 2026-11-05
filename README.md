@@ -9,6 +9,7 @@ A macOS menu bar app for quick navigation between iTerm2 tabs.
 - Click to switch to any tab instantly
 - Opens instantly: a background thread refreshes the tab list every 5 seconds (`REFRESH_SECS`), and each open triggers another refresh
 - Claude Code threads listed first, grouped by what they need from you; the menu bar shows `❓N` when N threads need an answer
+- Recently closed Claude Code threads (the newest 10 that aren't running) in a submenu, with a click to resume one in a new tab
 
 ## Claude Code thread states
 
@@ -24,6 +25,19 @@ A macOS menu bar app for quick navigation between iTerm2 tabs.
 | 💤 Stale | Idle over 8 hours (a `❓` marks an old unanswered question) |
 
 Hover over a thread to see the end of Claude's last reply. Thresholds are `CURRENT_MINS` and `STALE_HOURS` in `claude_threads.py`. `python3 claude_threads.py` prints the same table in the terminal.
+
+## Recently closed threads
+
+The 🕘 Recently closed submenu lists the newest Claude Code transcripts in `~/.claude/projects` whose thread isn't running (no live `~/.claude/sessions/<pid>.json`, and no `--resume` or `--session-id` for it on a running command line). ✅ marks a thread whose last turn ran `git push`. Clicking a row opens a new iTerm tab and resumes the thread. The limit is `RECENT_LIMIT` in `claude_threads.py`.
+
+Two optional environment variables change what's listed and what runs:
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `CLAUDE_THREADS_ROOT` | Only list threads started under this directory; project names are shown relative to it | all threads |
+| `CLAUDE_RESUME_CMD` | Command typed into the new tab. `{id}`, `{cwd}`, `{rel}` (cwd relative to the root) and `{model}` are filled in, shell-quoted | `cd {cwd} && claude --resume {id}` |
+
+For a launch agent, set them under `EnvironmentVariables` in the plist.
 
 ## Requirements
 

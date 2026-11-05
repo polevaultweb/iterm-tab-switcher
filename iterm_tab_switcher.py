@@ -40,8 +40,8 @@ class MenuDelegate(NSObject):
 class ITermTabSwitcher(rumps.App):
     def __init__(self):
         super().__init__(ICON, quit_button=None)
-        # (tabs, threads), replaced whole by the collector thread and only read on the main thread
-        self.snapshot = ([], {})
+        # (tabs, threads, recent), replaced whole by the collector thread and only read on the main thread
+        self.snapshot = ([], {}, [])
         self.wake = threading.Event()
         self.collect()
         self.build_menu()
@@ -67,7 +67,12 @@ class ITermTabSwitcher(rumps.App):
         except Exception as e:
             print(f"Error reading Claude threads: {e}")
             threads = {}
-        self.snapshot = (tabs, threads)
+        try:
+            recent = claude_threads.recent_closed()
+        except Exception as e:
+            print(f"Error reading recent threads: {e}")
+            recent = []
+        self.snapshot = (tabs, threads, recent)
 
     def get_tabs(self):
         """Get all iTerm2 sessions via AppleScript"""
@@ -138,15 +143,36 @@ class ITermTabSwitcher(rumps.App):
         except Exception as e:
             print(f"Error switching tab: {e}")
 
+    def reopen_thread(self, command):
+        """Run a resume command in a new tab of the front iTerm window, or a new window if there is none"""
+        command = command.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'''
+        tell application "iTerm2"
+            activate
+            if (count of windows) is 0 then
+                create window with default profile
+            else
+                tell current window to create tab with default profile
+            end if
+            tell current session of current window to write text "{command}"
+        end tell
+        '''
+        try:
+            subprocess.run(["osascript", "-e", script], timeout=5)
+        except Exception as e:
+            print(f"Error reopening thread: {e}")
+        self.wake.set()
+
     def update_title(self, _):
         waiting = sum(t["state"] == "needs_answer" for t in self.snapshot[1].values())
         title = f"{ICON} ❓{waiting}" if waiting else ICON
         if self.title != title:
             self.title = title
 
-    def _add(self, title, callback=None, session_id=None, tooltip=None):
+    def _add(self, title, callback=None, session_id=None, tooltip=None, parent=None):
+        parent = self.menu if parent is None else parent
         # rumps keys menu items by title, so pad duplicates with zero-width spaces
-        while title in self.menu:
+        while title in parent:
             title += "​"
         item = rumps.MenuItem(title)
         if callback:
@@ -154,16 +180,19 @@ class ITermTabSwitcher(rumps.App):
             item.set_callback(callback)
         if tooltip:
             item._menuitem.setToolTip_(tooltip)
-        self.menu.add(item)
+        parent.add(item)
+        return item
 
     def build_menu(self):
         """Rebuild the menu from the latest snapshot"""
         self.menu.clear()
 
-        tabs, threads = self.snapshot
+        tabs, threads, recent = self.snapshot
 
         if not tabs:
             self._add("No tabs found")
+            self.menu.add(None)  # separator
+            self._add_recent(recent)
         else:
             claude_tabs = [(tab, threads[tab["tty"]]) for tab in tabs if tab["tty"] in threads]
             for state, label in claude_threads.STATES:
@@ -186,6 +215,8 @@ class ITermTabSwitcher(rumps.App):
                     )
                 self.menu.add(None)  # separator
 
+            self._add_recent(recent)
+
             other = [tab for tab in tabs if tab["tty"] not in threads]
             current_window = None
             for tab in other:
@@ -202,6 +233,25 @@ class ITermTabSwitcher(rumps.App):
                 self.menu.add(None)  # separator
 
         self.menu.add(rumps.MenuItem("Quit", callback=rumps.quit_application))
+
+    def _add_recent(self, recent):
+        """Threads closed recently, newest first, in a submenu; clicking one resumes it in a new tab"""
+        if not recent:
+            return
+        submenu = self._add(f"🕘 Recently closed ({len(recent)})")
+        for r in recent:
+            done = " ✅" if r["pushed"] else ""
+            self._add(
+                f"{r['project']} · {r['title'][:45]}  · {claude_threads.age(r['idle_secs'])}{done}",
+                callback=self.on_recent_click,
+                session_id=r["command"],
+                tooltip=r["command"],
+                parent=submenu
+            )
+        self.menu.add(None)  # separator
+
+    def on_recent_click(self, sender):
+        self.reopen_thread(sender.session_id)
 
     def on_tab_click(self, sender):
         """Handle tab menu item click"""

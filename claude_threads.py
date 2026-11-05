@@ -11,12 +11,20 @@ and a transcript at ~/.claude/projects/<dir>/<session id>.jsonl. The state comes
   stale         idle over STALE_HOURS
   wrapped       the last turn ran git push (wrap-up commits and pushes), so the tab can close
 
+recent_closed() lists the newest threads that aren't running, for reopening. Two optional settings:
+
+  CLAUDE_THREADS_ROOT  only list threads started under this directory, and name projects relative to it
+  CLAUDE_RESUME_CMD    command typed into the new tab; {id}, {cwd}, {rel} (cwd relative to the root, or
+                       "." at the root) and {model} (opus, sonnet...) are filled in, shell-quoted.
+                       Default: cd {cwd} && claude --resume {id}
+
 Run directly to print the table: python3 claude_threads.py
 """
 
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -26,7 +34,8 @@ STALE_HOURS = 8
 
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
-TREE_ROOT = str(Path.home() / "claude-sessions")
+TREE_ROOT = os.path.expanduser(os.environ.get("CLAUDE_THREADS_ROOT", "")).rstrip("/")
+RESUME_CMD = os.environ.get("CLAUDE_RESUME_CMD", "cd {cwd} && claude --resume {id}")
 TAIL_BYTES = 256 * 1024
 
 STATES = [
@@ -127,10 +136,14 @@ def classify(status, idle_secs, transcript):
     return "current" if idle_secs < CURRENT_MINS * 60 else "ready_to_wrap"
 
 
+def _in_tree(cwd):
+    return not TREE_ROOT or cwd == TREE_ROOT or cwd.startswith(TREE_ROOT + "/")
+
+
 def project_of(cwd):
-    if cwd == TREE_ROOT:
-        return "claude-sessions"
-    if cwd.startswith(TREE_ROOT + "/"):
+    if TREE_ROOT and cwd == TREE_ROOT:
+        return os.path.basename(TREE_ROOT)
+    if TREE_ROOT and cwd.startswith(TREE_ROOT + "/"):
         return cwd[len(TREE_ROOT) + 1:]
     return os.path.basename(cwd) or cwd
 
@@ -175,6 +188,99 @@ def threads():
     return found
 
 
+RECENT_LIMIT = 10
+# Transcript folders for threads started in the tree: Claude Code names them after the cwd, / and . → -
+TREE_PREFIX = re.sub(r"[/.]", "-", TREE_ROOT)  # empty without a root, so every folder matches
+_TITLE_RE = re.compile(rb'"(?:customTitle|aiTitle)":"((?:[^"\\]|\\.)*)"')
+_MODEL_RE = re.compile(rb'"model":"claude-([a-z]+)')
+# path → (mtime, details); transcripts only change while their thread runs, so closed ones parse once
+_recent_cache = {}
+
+
+def _running_ids():
+    """Session ids of every live Claude process: its status file, plus --resume/--session-id on command lines"""
+    ids = set()
+    for f in SESSIONS_DIR.glob("*.json"):
+        try:
+            info = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if info.get("pid") and _alive(info["pid"]) and info.get("sessionId"):
+            ids.add(info["sessionId"])
+    out = subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
+    ids.update(re.findall(r"--(?:resume|session-id)[ =]([0-9a-f-]{36})", out))
+    return ids
+
+
+def _first_prompt(path):
+    """The first message typed in a thread, for threads Claude never titled"""
+    with open(path, "rb") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            content = entry.get("message", {}).get("content") if entry.get("type") == "user" else None
+            if isinstance(content, str) and not entry.get("isMeta") and not content.startswith("<"):
+                return " ".join(content.split())
+    return ""
+
+
+def _recent_details(path, mtime):
+    cached = _recent_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    data = path.read_bytes()
+    cwd = re.search(rb'"cwd":"([^"]*)"', data)
+    titles = _TITLE_RE.findall(data)
+    models = _MODEL_RE.findall(data)
+    title = json.loads(b'"' + titles[-1] + b'"') if titles else _first_prompt(path)
+    details = {
+        "cwd": cwd.group(1).decode() if cwd else "",
+        "title": title,
+        "model": models[-1].decode() if models else "",
+        "pushed": read_transcript(path)["pushed"],
+    }
+    _recent_cache[path] = (mtime, details)
+    return details
+
+
+def recent_closed(limit=RECENT_LIMIT):
+    """The newest threads (under CLAUDE_THREADS_ROOT, if set) that aren't running, newest first"""
+    running = _running_ids()
+    now = time.time()
+    files = []
+    for path in PROJECTS_DIR.glob(f"{TREE_PREFIX}*/*.jsonl"):
+        try:
+            files.append((path.stat().st_mtime, path))
+        except OSError:
+            pass
+    found = []
+    for mtime, path in sorted(files, reverse=True):
+        if len(found) >= limit:
+            break
+        if path.stem in running:
+            continue
+        try:
+            d = _recent_details(path, mtime)
+        except OSError:
+            continue
+        cwd = d["cwd"]
+        if not d["title"] or not cwd or not _in_tree(cwd):
+            continue
+        rel = os.path.relpath(cwd, TREE_ROOT) if TREE_ROOT else cwd
+        fields = {"id": path.stem, "cwd": cwd, "rel": rel, "model": d["model"]}
+        found.append({
+            "session_id": path.stem,
+            "project": project_of(cwd),
+            "command": RESUME_CMD.format(**{k: shlex.quote(v) for k, v in fields.items()}),
+            "title": d["title"],
+            "idle_secs": now - mtime,
+            "pushed": d["pushed"],
+        })
+    return found
+
+
 def clean_title(name):
     """Drop Claude's status glyph and iTerm's '(job)' suffix from a session name"""
     name = re.sub(r"\s*\([^)]*\)$", "", name.strip())
@@ -184,3 +290,6 @@ def clean_title(name):
 if __name__ == "__main__":
     for tty, t in sorted(threads().items(), key=lambda kv: kv[1]["idle_secs"]):
         print(f"{t['state']:14} {age(t['idle_secs']):>4}  {tty:8} {t['project']:22} {t['last_text'][-70:]!r}")
+    print("\nRecently closed")
+    for r in recent_closed():
+        print(f"{'✅' if r['pushed'] else '  '} {age(r['idle_secs']):>4}  {r['project']:22} {r['title'][:50]:50}  {r['command']}")
