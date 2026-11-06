@@ -4,12 +4,14 @@ Live Claude Code threads and what each one needs from you.
 Claude Code writes ~/.claude/sessions/<pid>.json for every running thread (status busy or idle)
 and a transcript at ~/.claude/projects/<dir>/<session id>.jsonl. The state comes from the two:
 
-  needs_answer  idle, and the last reply asks a question, opens AskUserQuestion or waits on a permission
+  needs_answer  Claude Code reports status "waiting" (a permission prompt or question dialog, at any age), or
+                idle under STALE_HOURS and the reply ends by asking (a "?" or "let me know"-style line in its
+                closing paragraph, outside code and quotes) or leaves a tool call unanswered
   working       busy
   current       idle under CURRENT_MINS, nothing asked
   ready_to_wrap idle CURRENT_MINS to STALE_HOURS, nothing asked
   stale         idle over STALE_HOURS
-  wrapped       the last turn ran git push (wrap-up commits and pushes), so the tab can close
+  wrapped       the last turn ran git push (wrap-up commits and pushes) and asked nothing, so the tab can close
 
 recent_closed() lists the newest threads that aren't running, for reopening. Two optional settings:
 
@@ -95,9 +97,39 @@ def _is_prompt(entry):
     return isinstance(content, list) and not any(c.get("type") == "tool_result" for c in content)
 
 
+# Endings that ask without a question mark: "Say the word and I'll push it", "Let me know which"
+ASK_PHRASES = re.compile(
+    r"\b(let me know|say the word|tell me (if|whether|which|what|how)|want me to|shall i|should i|would you like)\b",
+    re.IGNORECASE,
+)
+_FENCED = re.compile(r"^```.*?^```[^\n]*$", re.MULTILINE | re.DOTALL)
+_LIST_ITEM = re.compile(r"^\s*([-*+]|\d+[.)])\s")
+# "Thanks,\nIain": the reply ends with a drafted message, so its questions are for someone else
+_SIGN_OFF = re.compile(r"^(thanks|thank you|many thanks|cheers|best|regards|kind regards|best regards)\b[,.!]?$", re.IGNORECASE)
+
+
+def _closing_lines(text):
+    """The lines a reply ends on: its last two paragraphs, plus one more when the last is a list of options.
+    Code blocks, quoted text and drafts ending in a sign-off are left out, so a drafted email or snippet
+    ending in '?' doesn't count."""
+    text = _FENCED.sub("", text)
+    paragraphs = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [l.strip() for l in block.splitlines() if l.strip() and not l.lstrip().startswith(">")]
+        if lines:
+            paragraphs.append(lines)
+    if not paragraphs or _SIGN_OFF.match(paragraphs[-1][0]):
+        return []
+    # A question often comes just before a closing note ("Want me to change it?" then a reminder)
+    take = 3 if all(_LIST_ITEM.match(l) for l in paragraphs[-1]) else 2
+    return [l for p in paragraphs[-take:] for l in p]
+
+
 def _asks_question(text):
-    lines = [l.strip().rstrip("*_)` ") for l in text.strip().splitlines() if l.strip()]
-    return any(l.endswith("?") for l in lines[-3:])
+    for line in _closing_lines(text):
+        if line.rstrip("*_)` ").endswith("?") or ASK_PHRASES.search(line):
+            return True
+    return False
 
 
 def read_transcript(path):
@@ -124,15 +156,20 @@ def read_transcript(path):
     return result
 
 
-def classify(status, idle_secs, transcript):
+def classify(status, idle_secs, asked, pushed):
+    # Claude Code's own signal: a permission prompt or question dialog is on screen. Never ages out
+    if status == "waiting":
+        return "needs_answer"
     if status == "busy":
         return "working"
-    if transcript["pushed"]:
+    stale = idle_secs > STALE_HOURS * 3600
+    # A question asked after a push (wrap-up asking about Todoist, say) still needs an answer
+    if asked:
+        return "stale" if stale else "needs_answer"
+    if pushed:
         return "wrapped"
-    if idle_secs > STALE_HOURS * 3600:
+    if stale:
         return "stale"
-    if transcript["open_tool"] or _asks_question(transcript["last_text"]):
-        return "needs_answer"
     return "current" if idle_secs < CURRENT_MINS * 60 else "ready_to_wrap"
 
 
@@ -174,14 +211,18 @@ def threads():
         transcripts = list(PROJECTS_DIR.glob(f"*/{info['sessionId']}.jsonl"))
         transcript = read_transcript(transcripts[0]) if transcripts else {"last_text": "", "open_tool": None, "pushed": False}
         idle_secs = now - info.get("statusUpdatedAt", info.get("updatedAt", now * 1000)) / 1000
-        state = classify(info.get("status"), idle_secs, transcript)
+        asked = bool(transcript["open_tool"]) or _asks_question(transcript["last_text"])
+        status = info.get("status")
+        state = classify(status, idle_secs, asked, transcript["pushed"])
         found[ttys[pid]] = {
             "pid": pid,
             "session_id": info["sessionId"],
             "project": project_of(info.get("cwd", "")),
             "state": state,
             "idle_secs": idle_secs,
-            "asked": bool(transcript["open_tool"]) or _asks_question(transcript["last_text"]),
+            "asked": asked or status == "waiting",
+            # What Claude Code says it's waiting for, e.g. "input needed"; empty unless status is waiting
+            "waiting_for": (info.get("waitingFor") or "input needed") if status == "waiting" else "",
             "last_text": transcript["last_text"],
             "open_tool": transcript["open_tool"],
         }

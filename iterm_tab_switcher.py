@@ -9,6 +9,7 @@ A background thread collects tabs and thread states every REFRESH_SECS, so openi
 builds it from the latest snapshot. Each open also triggers a fresh collection for the next one.
 """
 
+import os
 import rumps
 import subprocess
 import threading
@@ -17,8 +18,25 @@ import objc
 
 import claude_threads
 
-ICON = "🖥️"
+DEFAULT_ICON = "🖥️"
 REFRESH_SECS = 5
+
+
+def resolve_icon():
+    """(image path, text) for the menu bar. TAB_SWITCHER_ICON is text such as an emoji, or a path to an image."""
+    setting = os.environ.get("TAB_SWITCHER_ICON", "").strip() or DEFAULT_ICON
+    path = os.path.expanduser(setting)
+    if os.path.isfile(path):
+        return path, ""
+    if "/" in setting or setting.lower().endswith((".png", ".pdf", ".tiff", ".icns")):
+        print(f"Icon {path} not found; using {DEFAULT_ICON}")
+        return None, DEFAULT_ICON
+    return None, setting
+
+
+ICON_IMAGE, ICON = resolve_icon()
+# One-colour images look right in light and dark menu bars when macOS tints them; set 0 for a colour image
+ICON_TEMPLATE = os.environ.get("TAB_SWITCHER_ICON_TEMPLATE", "1") != "0"
 
 
 class MenuDelegate(NSObject):
@@ -39,7 +57,8 @@ class MenuDelegate(NSObject):
 
 class ITermTabSwitcher(rumps.App):
     def __init__(self):
-        super().__init__(ICON, quit_button=None)
+        super().__init__("iTerm Tab Switcher", title=ICON or None, icon=ICON_IMAGE,
+                         template=ICON_TEMPLATE if ICON_IMAGE else None, quit_button=None)
         # (tabs, threads, recent), replaced whole by the collector thread and only read on the main thread
         self.snapshot = ([], {}, [])
         self.wake = threading.Event()
@@ -165,7 +184,8 @@ class ITermTabSwitcher(rumps.App):
 
     def update_title(self, _):
         waiting = sum(t["state"] == "needs_answer" for t in self.snapshot[1].values())
-        title = f"{ICON} ❓{waiting}" if waiting else ICON
+        # An image icon leaves ICON empty, so the count sits beside the image
+        title = " ".join(filter(None, [ICON, f"❓{waiting}" if waiting else ""])) or None
         if self.title != title:
             self.title = title
 
@@ -207,8 +227,9 @@ class ITermTabSwitcher(rumps.App):
                     title = claude_threads.clean_title(tab["name"])
                     asked = " ❓" if t["asked"] and state != "needs_answer" else ""
                     when = "" if state == "working" else f"  · {claude_threads.age(t['idle_secs'])}"
+                    waiting = f"  · {t['waiting_for']}" if t["waiting_for"] else ""
                     self._add(
-                        f"    {t['project']} · {title[:45]}{when}{asked}",
+                        f"    {t['project']} · {title[:45]}{when}{waiting}{asked}",
                         callback=self.on_tab_click,
                         session_id=tab["id"],
                         tooltip=t["last_text"].strip()[-600:] or None
